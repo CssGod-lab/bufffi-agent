@@ -17,28 +17,15 @@ if [ ! -f "$WALLET_FILE" ]; then
   exit 1
 fi
 
-# Singleton guard: check pidfile first
-if [ -f "$PIDFILE" ]; then
-  OLD_PID=$(cat "$PIDFILE")
-  if kill -0 "$OLD_PID" 2>/dev/null; then
-    echo "[ERROR] Agent already running (PID $OLD_PID). Kill it first or remove $PIDFILE"
-    exit 1
-  else
-    echo "[INIT] Stale pidfile found (PID $OLD_PID dead). Cleaning up."
-    rm -f "$PIDFILE"
-  fi
-fi
-
-# Also kill any stale process on control port
+# Kill any stale process on control port before starting
 if lsof -i :$CONTROL_PORT -t >/dev/null 2>&1; then
   echo "[INIT] Killing stale process on port $CONTROL_PORT..."
   kill $(lsof -i :$CONTROL_PORT -t) 2>/dev/null || true
   sleep 1
 fi
 
-# Write pidfile (will be current shell, replaced by exec below)
-trap "rm -f $PIDFILE" EXIT
-echo $$ > "$PIDFILE"
+# Clean stale pidfile (JS handles singleton guard itself)
+rm -f "$PIDFILE"
 
 # Extract private key
 PRIVATE_KEY=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$WALLET_FILE','utf8')).privateKey)")
