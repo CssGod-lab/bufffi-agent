@@ -118,7 +118,7 @@ const CLANKER_BASE = "0x1bc0c42215582d5A085795f4baDbaC3ff36d1Bcb".toLowerCase();
 const V4_ACTIONS = {
   SWAP_EXACT_IN_SINGLE: 0x06,
   SETTLE_ALL: 0x0c,
-  TAKE_ALL: 0x12,
+  TAKE_ALL: 0x0f,
 };
 const V4_COMMANDS = { V4_SWAP: 0x10 };
 
@@ -330,11 +330,13 @@ const agentStartTime = Date.now();
 
 function processPairUpdate(update) {
   // The marketData event from the relay includes { chain, timestamp, ...pairUpdateData }
+  // Trade fields (last_price, buy_volume, etc.) may be nested inside a `data` sub-object
   const chain = update.chain || "base_v3";
-  const data = update;
+  const inner = update.data || update;
+  const data = { ...inner, ...update };
 
   // Extract pair address
-  const pairAddress = (data.pairAddress || data.pair_address || "").toLowerCase();
+  const pairAddress = (data.pairAddress || data.pair_address || inner.pair_address || "").toLowerCase();
   if (!pairAddress) return;
 
   // Apply pair filters
@@ -753,11 +755,16 @@ async function checkTradeBalances() {
     const trade = activeTrades[pairAddress];
     if (!trade) continue;
 
-    const tokenAddress = trade.tokenAddress || (
-      trade.token0.toLowerCase() === (trade.baseToken || detectBaseToken(trade.token0, trade.token1))
+    let tokenAddress = trade.tokenAddress;
+    if (!tokenAddress && trade.token0 && trade.token1) {
+      tokenAddress = trade.token0.toLowerCase() === (trade.baseToken || detectBaseToken(trade.token0, trade.token1))
         ? trade.token1
-        : trade.token0
-    );
+        : trade.token0;
+    }
+    if (!tokenAddress) {
+      log(`[BALANCE] ${trade.symbol || pairAddress}: no tokenAddress, skipping (waiting for feed data)`);
+      continue;
+    }
 
     try {
       const tokenContract = new ethers.Contract(tokenAddress, ERC20_ABI, provider);
@@ -1507,6 +1514,7 @@ async function executeSell(pairAddress, trade, actionPercent) {
 
 let socket;
 let updateCount = 0;
+let totalUpdateCount = 0;
 
 function connectToFeed() {
   log(`[FEED] Connecting to ${SERVER_URL}...`);
@@ -1531,6 +1539,10 @@ function connectToFeed() {
 
   socket.on("marketData", (update) => {
     updateCount++;
+    totalUpdateCount++;
+    if (totalUpdateCount % 200 === 0) {
+      log(`[FEED] ${totalUpdateCount} total events received`);
+    }
     processPairUpdate(update);
   });
 
