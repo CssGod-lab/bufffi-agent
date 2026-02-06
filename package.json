@@ -1,0 +1,16 @@
+{
+  "name": "bufffi-agent",
+  "version": "1.0.0",
+  "description": "Standalone trading agent for Base chain. Connects to BuffFi market data feed, evaluates policies against live trade data, executes swaps via on-chain contracts.",
+  "main": "standalone-agent.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "ethers": "^6.16.0",
+    "socket.io-client": "^4.8.3"
+  }
+}
