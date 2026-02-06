@@ -18,6 +18,20 @@ const fs = require("fs");
 const path = require("path");
 const http = require("http");
 
+// ── Singleton PID guard ──
+
+const PIDFILE = process.env.PIDFILE || path.join(__dirname, "agent.pid");
+
+if (fs.existsSync(PIDFILE)) {
+  const oldPid = parseInt(fs.readFileSync(PIDFILE, "utf8"));
+  try { process.kill(oldPid, 0); console.error(`Agent already running (PID ${oldPid})`); process.exit(1); }
+  catch {} // process dead, stale file
+}
+fs.writeFileSync(PIDFILE, String(process.pid));
+const cleanupPid = () => { try { fs.unlinkSync(PIDFILE); } catch {} };
+process.on("exit", cleanupPid);
+process.on("SIGTERM", () => { cleanupPid(); process.exit(0); });
+
 // ═══════════════════════════════════════════════════════════════
 // Section 1: Constants, ABIs & Config
 // ═══════════════════════════════════════════════════════════════
@@ -139,7 +153,6 @@ const CONTROL_PORT = parseInt(process.env.CONTROL_PORT || "31415", 10);
 const DEFAULT_CONFIG = {
   maxEthPerTrade: 0.005,
   slippage: 10,
-  maxPositions: 5,
   groupInterval: 1,
   maxGroups: 60,
   onlyPairs: [],
@@ -289,14 +302,6 @@ function computeSummary() {
     volume_usd: volumeEth * wethPrice,
     avg_roi_pct: closedTrades > 0 ? roiPctSum / closedTrades : 0,
     net_roi_pct: volumeEth > 0 ? ((realizedPnlEth + unrealizedPnlEth) / volumeEth) * 100 : 0,
-    ev_per_trade_eth: closedTrades > 0 ? realizedPnlEth / closedTrades : 0,
-    sharpe: (() => {
-      if (closedTrades < 2) return 0;
-      const pnls = inactiveTrades.map(t => (t.eth_sold || 0) - (t.eth_spent || 0));
-      const mean = pnls.reduce((s, v) => s + v, 0) / pnls.length;
-      const variance = pnls.reduce((s, v) => s + (v - mean) ** 2, 0) / (pnls.length - 1);
-      return Math.sqrt(variance) > 0 ? mean / Math.sqrt(variance) : 0;
-    })(),
     updated_at: new Date().toISOString(),
   };
 }
@@ -654,10 +659,6 @@ function evaluateEntries(pairAddress, groupKey) {
   const pairData = computedPairData[pairAddress];
   if (!pairData) return;
 
-  // Check position limit
-  const activeCount = Object.keys(activeTrades).length;
-  if (activeCount >= config.maxPositions) return;
-
   // Already have a trade on this pair
   if (activeTrades[pairAddress]) return;
 
@@ -763,16 +764,11 @@ async function checkTradeBalances() {
     const trade = activeTrades[pairAddress];
     if (!trade) continue;
 
-    let tokenAddress = trade.tokenAddress;
-    if (!tokenAddress && trade.token0 && trade.token1) {
-      tokenAddress = trade.token0.toLowerCase() === (trade.baseToken || detectBaseToken(trade.token0, trade.token1))
+    const tokenAddress = trade.tokenAddress || (
+      trade.token0.toLowerCase() === (trade.baseToken || detectBaseToken(trade.token0, trade.token1))
         ? trade.token1
-        : trade.token0;
-    }
-    if (!tokenAddress) {
-      log(`[BALANCE] ${trade.symbol || pairAddress}: no tokenAddress, skipping (waiting for feed data)`);
-      continue;
-    }
+        : trade.token0
+    );
 
     try {
       const tokenContract = new ethers.Contract(tokenAddress, ERC20_ABI, provider);
@@ -1622,7 +1618,6 @@ function startControlServer() {
         for (const [addr, t] of Object.entries(activeTrades)) {
           trades[addr] = {
             symbol: t.symbol || "",
-            tokenAddress: t.tokenAddress || "",
             entry_price: t.entry_price,
             current_price: t.current_price,
             price_change_pct: parseFloat((t.price_change_pct || 0).toFixed(2)),
@@ -1803,7 +1798,7 @@ function startControlServer() {
       // ── POST /config ─────────────────────────────────────────
       if (method === "POST" && url === "/config") {
         const body = await parseBody(req);
-        const updatable = ["maxEthPerTrade", "slippage", "maxPositions", "groupInterval", "maxGroups", "onlyPairs", "excludePairs"];
+        const updatable = ["maxEthPerTrade", "slippage", "groupInterval", "maxGroups", "onlyPairs", "excludePairs"];
         const updated = {};
         for (const key of updatable) {
           if (body[key] !== undefined) {
@@ -1885,7 +1880,6 @@ async function main() {
   // Log config summary
   log(`[INIT] Max ETH/trade: ${config.maxEthPerTrade}`);
   log(`[INIT] Slippage: ${config.slippage}%`);
-  log(`[INIT] Max positions: ${config.maxPositions}`);
   log(`[INIT] Group interval: ${config.groupInterval} min`);
   log(`[INIT] Max groups/pair: ${config.maxGroups}`);
   const withEntry = config.policies.filter((p) => p.entryFunc).length;
@@ -1958,9 +1952,9 @@ async function main() {
     saveTrades();
   }, 60000);
 
-  // Graceful shutdown handler
-  function shutdown(signal) {
-    log(`\n[SHUTDOWN] Received ${signal}, shutting down...`);
+  // SIGINT handler
+  process.on("SIGINT", () => {
+    log("\n[SHUTDOWN] Received SIGINT, shutting down...");
 
     if (Object.keys(activeTrades).length > 0) {
       log("[SHUTDOWN] Active trades:");
@@ -1971,20 +1965,11 @@ async function main() {
     }
 
     saveTrades();
+    cleanupPid();
     if (controlServer) controlServer.close();
     if (socket) socket.disconnect();
-
-    // Clean up pidfile
-    const pidfile = process.env.PIDFILE;
-    if (pidfile) {
-      try { fs.unlinkSync(pidfile); } catch {}
-    }
-
     process.exit(0);
-  }
-
-  process.on("SIGINT", () => shutdown("SIGINT"));
-  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  });
 
   log("[INIT] Agent started. Waiting for market data...\n");
 }
