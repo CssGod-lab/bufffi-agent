@@ -47,7 +47,7 @@ PRIVATE_KEY=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$WALLE
 echo "[INIT] Fetching latest policy config..."
 COOKIE=$(node -e "try{const d=JSON.parse(require('fs').readFileSync('$SESSION_FILE','utf8'));console.log(d.cookie||'')}catch{console.log('')}")
 
-CONFIG=$(curl -s -H "X-Agent-ID: $AGENT_ID" -H "Cookie: $COOKIE" "$SERVER_URL/agents/policies/53/export")
+CONFIG=$(curl -s -H "X-Agent-ID: $AGENT_ID" -H "Cookie: $COOKIE" "$SERVER_URL/agents/policies/55/export")
 
 # Check if we got valid JSON
 if echo "$CONFIG" | node -e "process.stdin.on('data',d=>{try{JSON.parse(d);process.exit(0)}catch{process.exit(1)}})" 2>/dev/null; then
@@ -59,7 +59,7 @@ else
   # Re-read new cookie
   cd bufffi-agent
   COOKIE=$(node -e "try{const d=JSON.parse(require('fs').readFileSync('$SESSION_FILE','utf8'));console.log(d.cookie||'')}catch{console.log('')}")
-  CONFIG=$(curl -s -H "X-Agent-ID: $AGENT_ID" -H "Cookie: $COOKIE" "$SERVER_URL/agents/policies/53/export")
+  CONFIG=$(curl -s -H "X-Agent-ID: $AGENT_ID" -H "Cookie: $COOKIE" "$SERVER_URL/agents/policies/55/export")
   echo "$CONFIG" > agent-config.json
   echo "[INIT] Config saved after re-auth."
 fi
