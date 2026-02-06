@@ -289,6 +289,14 @@ function computeSummary() {
     volume_usd: volumeEth * wethPrice,
     avg_roi_pct: closedTrades > 0 ? roiPctSum / closedTrades : 0,
     net_roi_pct: volumeEth > 0 ? ((realizedPnlEth + unrealizedPnlEth) / volumeEth) * 100 : 0,
+    ev_per_trade_eth: closedTrades > 0 ? realizedPnlEth / closedTrades : 0,
+    sharpe: (() => {
+      if (closedTrades < 2) return 0;
+      const pnls = inactiveTrades.map(t => (t.eth_sold || 0) - (t.eth_spent || 0));
+      const mean = pnls.reduce((s, v) => s + v, 0) / pnls.length;
+      const variance = pnls.reduce((s, v) => s + (v - mean) ** 2, 0) / (pnls.length - 1);
+      return Math.sqrt(variance) > 0 ? mean / Math.sqrt(variance) : 0;
+    })(),
     updated_at: new Date().toISOString(),
   };
 }
@@ -1614,6 +1622,7 @@ function startControlServer() {
         for (const [addr, t] of Object.entries(activeTrades)) {
           trades[addr] = {
             symbol: t.symbol || "",
+            tokenAddress: t.tokenAddress || "",
             entry_price: t.entry_price,
             current_price: t.current_price,
             price_change_pct: parseFloat((t.price_change_pct || 0).toFixed(2)),
@@ -1949,9 +1958,9 @@ async function main() {
     saveTrades();
   }, 60000);
 
-  // SIGINT handler
-  process.on("SIGINT", () => {
-    log("\n[SHUTDOWN] Received SIGINT, shutting down...");
+  // Graceful shutdown handler
+  function shutdown(signal) {
+    log(`\n[SHUTDOWN] Received ${signal}, shutting down...`);
 
     if (Object.keys(activeTrades).length > 0) {
       log("[SHUTDOWN] Active trades:");
@@ -1964,8 +1973,18 @@ async function main() {
     saveTrades();
     if (controlServer) controlServer.close();
     if (socket) socket.disconnect();
+
+    // Clean up pidfile
+    const pidfile = process.env.PIDFILE;
+    if (pidfile) {
+      try { fs.unlinkSync(pidfile); } catch {}
+    }
+
     process.exit(0);
-  });
+  }
+
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
 
   log("[INIT] Agent started. Waiting for market data...\n");
 }
