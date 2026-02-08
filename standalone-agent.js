@@ -151,7 +151,7 @@ const TRADE_LOG_PATH = process.env.TRADE_LOG_PATH || path.join(path.dirname(CONF
 const CONTROL_PORT = parseInt(process.env.CONTROL_PORT || "31415", 10);
 
 const DEFAULT_CONFIG = {
-  maxEthPerTrade: 0.005,
+  maxEthPerTradeValue: 0.005,
   slippage: 10,
   groupInterval: 1,
   maxGroups: 60,
@@ -310,7 +310,7 @@ function computeSummary() {
 // Section 2: Provider & Wallet Setup
 // ═══════════════════════════════════════════════════════════════
 
-const RPC_URL = process.env.RPC_URL || "https://mainnet.base.org";
+const RPC_URL = process.env.RPC_URL || "https://go.getblock.us/889f33a3782e48e9a46db80d496f7d2e";
 const PRIVATE_KEY = process.env.PRIVATE_KEY;
 const SERVER_URL = process.env.SERVER_URL || "https://alpha.cssgod.io";
 
@@ -775,6 +775,11 @@ async function checkTradeBalances() {
       const balance = await tokenContract.balanceOf(wallet.address);
 
       if (balance === 0n) {
+        const ageMs = Date.now() - (trade.opened_at || 0);
+        if (ageMs < 10 * 60 * 1000) {
+          log(`[BALANCE] ${trade.symbol || pairAddress}: balance is 0 but trade is only ${Math.round(ageMs/1000)}s old, skipping archive`);
+          continue;
+        }
         log(`[BALANCE] ${trade.symbol || pairAddress}: balance is 0, archiving trade`);
         const pnlEth = (trade.eth_sold || 0) - (trade.eth_spent || 0);
         const pnlPct = trade.eth_spent > 0 ? (pnlEth / trade.eth_spent) * 100 : 0;
@@ -1284,7 +1289,7 @@ async function executeBuy(pairAddress, pairData, policy, actionPercent) {
   executing[pairAddress] = true;
 
   try {
-    const ethAmount = config.maxEthPerTrade * (actionPercent / 100);
+    const ethAmount = config.maxEthPerTradeValue * (actionPercent / 100);
     const amountIn = ethers.parseEther(ethAmount.toFixed(18));
 
     const baseTokenAddress = detectBaseToken(pairData.token0, pairData.token1);
@@ -1388,7 +1393,7 @@ async function executeBuy(pairAddress, pairData, policy, actionPercent) {
     saveTrades();
   } catch (error) {
     log(`[BUY] ERROR: ${pairData.symbol || pairAddress}: ${error.message}`);
-    appendTradeLog({ type: "BUY", status: "ERROR", symbol: pairData.symbol, pairAddress, policy_id: policy.id, action_percent: actionPercent, eth_amount: config.maxEthPerTrade * (actionPercent / 100), error: error.message });
+    appendTradeLog({ type: "BUY", status: "ERROR", symbol: pairData.symbol, pairAddress, policy_id: policy.id, action_percent: actionPercent, eth_amount: config.maxEthPerTradeValue * (actionPercent / 100), error: error.message });
   } finally {
     executing[pairAddress] = false;
   }
@@ -1618,6 +1623,7 @@ function startControlServer() {
         for (const [addr, t] of Object.entries(activeTrades)) {
           trades[addr] = {
             symbol: t.symbol || "",
+            tokenAddress: t.tokenAddress || null,
             entry_price: t.entry_price,
             current_price: t.current_price,
             price_change_pct: parseFloat((t.price_change_pct || 0).toFixed(2)),
@@ -1733,9 +1739,9 @@ function startControlServer() {
         const pairData = computedPairData[addr];
         if (!pairData) return sendJson(res, 404, { error: `Pair ${addr} not found in market data. Wait for it to appear in the feed.` });
 
-        // Compute actionPercent relative to maxEthPerTrade, capped at 100
-        const actionPercent = Math.min(Math.round((ethAmount / config.maxEthPerTrade) * 100), 100);
-        const actualEth = config.maxEthPerTrade * (actionPercent / 100);
+        // Compute actionPercent relative to maxEthPerTradeValue, capped at 100
+        const actionPercent = Math.min(Math.round((ethAmount / config.maxEthPerTradeValue) * 100), 100);
+        const actualEth = config.maxEthPerTradeValue * (actionPercent / 100);
 
         log(`[CONTROL] Manual BUY on ${pairData.symbol || addr} for ~${actualEth.toFixed(6)} ETH (action=${actionPercent}%)`);
         await executeBuy(addr, pairData, { id: "manual" }, actionPercent);
@@ -1798,7 +1804,7 @@ function startControlServer() {
       // ── POST /config ─────────────────────────────────────────
       if (method === "POST" && url === "/config") {
         const body = await parseBody(req);
-        const updatable = ["maxEthPerTrade", "slippage", "groupInterval", "maxGroups", "onlyPairs", "excludePairs"];
+        const updatable = ["maxEthPerTradeValue", "slippage", "groupInterval", "maxGroups", "onlyPairs", "excludePairs"];
         const updated = {};
         for (const key of updatable) {
           if (body[key] !== undefined) {
@@ -1878,7 +1884,7 @@ async function main() {
   }
 
   // Log config summary
-  log(`[INIT] Max ETH/trade: ${config.maxEthPerTrade}`);
+  log(`[INIT] Max ETH/trade: ${config.maxEthPerTradeValue}`);
   log(`[INIT] Slippage: ${config.slippage}%`);
   log(`[INIT] Group interval: ${config.groupInterval} min`);
   log(`[INIT] Max groups/pair: ${config.maxGroups}`);

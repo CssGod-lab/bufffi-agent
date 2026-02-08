@@ -1,32 +1,138 @@
 # BuffFi Trading Agent
 
-Standalone trading agent for Base chain. Connects to BuffFi market data feed, evaluates policies against live trade data, executes swaps via on-chain contracts.
+Standalone trading agent for Base chain. Connects to BuffFi's real-time market data feed via WebSocket, evaluates entry/exit policies against live swap events, and executes trades on-chain through Uniswap V2/V3/V4 and Aerodrome.
 
-## Setup
+## Prerequisites
 
-1. Wallet must exist at `../.wallet/key.json`
-2. Auth session at `../.wallet/bufffi-session.json`
-3. Wallet needs ETH for gas + trading
+- **Node.js** v18+
+- A Base chain wallet with:
+  - **ETH** for gas fees (~0.001 ETH per trade for approve + swap steps)
+  - **WETH** for trading (this is what `maxEthPerTrade` draws from, the agent swaps WETH for tokens on buy and back on sell)
+- Wallet key at `../.wallet/key.json` (created via `node scripts/wallet.mjs init` from workspace root)
+- Auth session at `../.wallet/bufffi-session.json` (only needed if fetching policies from server)
 
-## Running
+## Wallet Funding
+
+The agent needs two tokens on Base:
+
+| Token | Purpose | Minimum |
+|-------|---------|---------|
+| **ETH** | Gas fees for on-chain transactions | 0.005 ETH |
+| **WETH** | Trading capital (swapped for target tokens) | 0.05+ ETH recommended |
+
+At `maxEthPerTrade: 0.005` with 5 concurrent trades, you need at least 0.025 WETH available. More WETH = more concurrent positions.
+
+You can wrap ETH to WETH on [Uniswap](https://app.uniswap.org/swap?chain=base) or directly on [WETH contract](https://basescan.org/address/0x4200000000000000000000000000000000000006).
+
+## Quick Start
 
 ```bash
 ./start.sh
 ```
 
-Or via OpenClaw dashboard: Projects > BuffFi Agent > Start
+Or via OpenClaw dashboard: **Projects > BuffFi Trading Agent > Start**
+
+The launcher script:
+1. Reads your private key from the wallet file
+2. Kills any stale agent processes
+3. Fetches the latest policy config from the server (re-authenticates if needed)
+4. Starts the agent with the configured policy
+
+### Switching Policies
+
+```bash
+POLICY_ID=91 ./start.sh    # Start with policy 91 instead of default (75)
+```
+
+Default policy is P75. Change `POLICY_ID` in `start.sh` or pass it as an env var.
 
 ## Control API
 
-While running, HTTP control server on port 18802:
+HTTP server on port **18803** while running:
 
-- `GET /status` — agent status, open positions, PnL
-- `GET /positions` — current open trades
-- `GET /config` — active policy config
-- `POST /config` — update config live
-- `POST /pause` — pause trading
-- `POST /resume` — resume trading
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/status` | Agent status, uptime, pairs tracked, open positions, PnL summary |
+| `GET` | `/trades` | Full trade history (open + closed) with summary stats |
+| `GET` | `/config` | Active policy config |
+| `POST` | `/pause` | Pause trading (stops new entries, keeps monitoring) |
+| `POST` | `/resume` | Resume trading |
+| `POST` | `/sell` | Sell a position: `{"pairAddress": "0x...", "percent": 100}` |
 
-## Policies
+### Example
 
-- **P52 Breakout Scale-Out** — primary strategy. Fresh pair breakout entry, 50% exit at +60%, trail remainder with 4x arm / 35% drawdown.
+```bash
+# Check status
+curl http://localhost:18803/status
+
+# Get trade history
+curl http://localhost:18803/trades
+
+# Sell a specific position
+curl -X POST http://localhost:18803/sell \
+  -H "Content-Type: application/json" \
+  -d '{"pairAddress": "0x...", "percent": 100}'
+```
+
+## Active Policies
+
+### P75 (Production) — Breakout + Trailing Exit
+- **Entry:** Fresh pair breakout (25% above range), 25% price change, 35 volatility, 0.65 falling knife floor, no-rebuy guard, gas gate 0.125 gwei, micro-cap filter
+- **Exit:** -20% hard stop loss, 3-min staleness exit (<5 txs), trailing from +60% with 15% drawdown = 100% sell
+- **Config:** 0.005 ETH/trade, 35% slippage tolerance
+
+### P91 (Candidate) — Relaxed Entry + Fast Trail
+- **Entry:** Lower thresholds (15% breakout, 15% price change, 20 volatility) to capture more trades
+- **Exit:** Same SL/staleness as P75, but faster trailing: arm at +30%, 10% drawdown from peak
+- **Performance:** Higher Sharpe (0.50 vs 0.49), more trades, lower avg win but more consistent
+
+### P55 (Candidate) — Partial Exit + Wide Trail
+- **Entry:** Same as P75
+- **Exit:** 50% partial sell at +60%, trail remainder with 4x arm / 35% drawdown. Catches bigger runners but holds more open positions.
+
+## Architecture
+
+```
+BuffFi Server (WebSocket) → Market Data Events → Policy Evaluation → On-chain Swap
+                                                        ↓
+                                                  agent-trades.json (persistence)
+                                                        ↓
+                                                  Control API (port 18803)
+```
+
+- Trades persist to `agent-trades.json` and restore on restart
+- On-chain balances checked every 5 minutes, zero-balance trades auto-pruned
+- 10-min grace period on fresh trades to avoid false zero-balance closures from stale RPC reads
+
+## Files
+
+| File | Description |
+|------|-------------|
+| `standalone-agent.js` | Main agent source (fetched from server on first run) |
+| `agent-config.json` | Active policy config (auto-generated by start.sh) |
+| `agent-trades.json` | Persistent trade state |
+| `start.sh` | Launcher script |
+| `agent.pid` | PID file for singleton guard |
+
+## Backtesting
+
+Requires holding 2,000,000 $WEBSIM tokens on Base. Use the BuffFi API:
+
+```bash
+# Authenticate
+node ../scripts/bufffi_auth.mjs
+
+# Run backtest
+curl -X POST https://alpha.cssgod.io/agents/backtest \
+  -H "Content-Type: application/json" \
+  -H "Cookie: <session_cookie>" \
+  -H "X-Agent-ID: <agent_id>" \
+  -d '{"policy_id": [75], "start_time": "2026-02-07T00:00:00Z", "end_time": "2026-02-07T12:00:00Z", "chain": "base"}'
+```
+
+## Links
+
+- **BuffFi Platform:** https://alpha.cssgod.io
+- **Skill Docs:** https://alpha.cssgod.io/agents/skill
+- **Policy Examples:** https://alpha.cssgod.io/agents/examples
+- **Base Wallet:** [0x5EF3bE428F6212cF0Cc81A84c6Ea11BDFaD39E27](https://basescan.org/address/0x5EF3bE428F6212cF0Cc81A84c6Ea11BDFaD39E27)

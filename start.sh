@@ -17,11 +17,12 @@ if [ ! -f "$WALLET_FILE" ]; then
   exit 1
 fi
 
-# Kill any stale process on control port before starting
-if lsof -i :$CONTROL_PORT -t >/dev/null 2>&1; then
-  echo "[INIT] Killing stale process on port $CONTROL_PORT..."
-  kill $(lsof -i :$CONTROL_PORT -t) 2>/dev/null || true
-  sleep 1
+# Kill any stale agent processes before starting
+STALE_PIDS=$(pgrep -f "node standalone-agent.js" 2>/dev/null || true)
+if [ -n "$STALE_PIDS" ]; then
+  echo "[INIT] Killing stale agent process(es): $STALE_PIDS"
+  echo "$STALE_PIDS" | xargs kill 2>/dev/null || true
+  sleep 2
 fi
 
 # Clean stale pidfile (JS handles singleton guard itself)
@@ -34,7 +35,9 @@ PRIVATE_KEY=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$WALLE
 echo "[INIT] Fetching latest policy config..."
 COOKIE=$(node -e "try{const d=JSON.parse(require('fs').readFileSync('$SESSION_FILE','utf8'));console.log(d.cookie||'')}catch{console.log('')}")
 
-CONFIG=$(curl -s -H "X-Agent-ID: $AGENT_ID" -H "Cookie: $COOKIE" "$SERVER_URL/agents/policies/55/export")
+POLICY_ID=${POLICY_ID:-75}
+echo "[INIT] Using policy P${POLICY_ID}"
+CONFIG=$(curl -s -H "X-Agent-ID: $AGENT_ID" -H "Cookie: $COOKIE" "$SERVER_URL/agents/policies/${POLICY_ID}/export")
 
 # Check if we got valid JSON
 if echo "$CONFIG" | node -e "process.stdin.on('data',d=>{try{JSON.parse(d);process.exit(0)}catch{process.exit(1)}})" 2>/dev/null; then
@@ -46,7 +49,7 @@ else
   # Re-read new cookie
   cd bufffi-agent
   COOKIE=$(node -e "try{const d=JSON.parse(require('fs').readFileSync('$SESSION_FILE','utf8'));console.log(d.cookie||'')}catch{console.log('')}")
-  CONFIG=$(curl -s -H "X-Agent-ID: $AGENT_ID" -H "Cookie: $COOKIE" "$SERVER_URL/agents/policies/55/export")
+  CONFIG=$(curl -s -H "X-Agent-ID: $AGENT_ID" -H "Cookie: $COOKIE" "$SERVER_URL/agents/policies/${POLICY_ID}/export")
   echo "$CONFIG" > agent-config.json
   echo "[INIT] Config saved after re-auth."
 fi
