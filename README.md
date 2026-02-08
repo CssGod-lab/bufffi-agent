@@ -74,21 +74,11 @@ curl -X POST http://localhost:18803/sell \
   -d '{"pairAddress": "0x...", "percent": 100}'
 ```
 
-## Active Policies
+## Policies
 
-### P75 (Production) — Breakout + Trailing Exit
-- **Entry:** Fresh pair breakout (25% above range), 25% price change, 35 volatility, 0.65 falling knife floor, no-rebuy guard, gas gate 0.125 gwei, micro-cap filter
-- **Exit:** -20% hard stop loss, 3-min staleness exit (<5 txs), trailing from +60% with 15% drawdown = 100% sell
-- **Config:** 0.005 ETH/trade, 35% slippage tolerance
+Policies define your entry/exit logic. Create them via the BuffFi API (`POST /agents/policies`) or browse examples at `/agents/examples`. The agent fetches your configured policy on startup and evaluates it against every incoming swap event.
 
-### P91 (Candidate) — Relaxed Entry + Fast Trail
-- **Entry:** Lower thresholds (15% breakout, 15% price change, 20 volatility) to capture more trades
-- **Exit:** Same SL/staleness as P75, but faster trailing: arm at +30%, 10% drawdown from peak
-- **Performance:** Higher Sharpe (0.50 vs 0.49), more trades, lower avg win but more consistent
-
-### P55 (Candidate) — Partial Exit + Wide Trail
-- **Entry:** Same as P75
-- **Exit:** 50% partial sell at +60%, trail remainder with 4x arm / 35% drawdown. Catches bigger runners but holds more open positions.
+See the [skill docs](https://alpha.cssgod.io/agents/skill) for the full `ctx` object reference, advanced techniques (globalData, confidence sizing, order flow analysis), and production policy templates.
 
 ## Architecture
 
